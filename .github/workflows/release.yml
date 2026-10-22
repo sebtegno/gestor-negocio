@@ -1,0 +1,50 @@
+name: Publicar version
+
+# Cada vez que subis cambios (subir_cambios.bat), GitHub genera el .exe y,
+# si app/version.py tiene una version nueva, la publica como release.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Leer version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path app/version.py -Pattern 'VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          gh release view "v$v" *> $null
+          if ($LASTEXITCODE -eq 0) { "existe=true" >> $env:GITHUB_OUTPUT } else { "existe=false" >> $env:GITHUB_OUTPUT }
+          exit 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Instalar dependencias
+        if: steps.ver.outputs.existe == 'false'
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Generar .exe
+        if: steps.ver.outputs.existe == 'false'
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed --name GestorNegocio
+          --hidden-import sqlalchemy.dialects.sqlite
+          --collect-data reportlab --collect-data certifi run.py
+
+      - name: Publicar release
+        if: steps.ver.outputs.existe == 'false'
+        run: gh release create "v${{ steps.ver.outputs.version }}" dist/GestorNegocio.exe --title "v${{ steps.ver.outputs.version }}" --notes "Version ${{ steps.ver.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ github.token }}

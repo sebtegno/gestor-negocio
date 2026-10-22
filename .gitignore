@@ -1,0 +1,17 @@
+# Datos del negocio: NUNCA subir
+*.db
+*.db-journal
+error.log
+certs/*
+!certs/.gitkeep
+assets/logo.png
+impresion_remito.json
+*.pdf
+
+# Generados
+__pycache__/
+*.pyc
+venv_build/
+build/
+dist/
+*.spec
