@@ -146,6 +146,9 @@ class DialogoNuevaCotizacion(QDialog):
                 alicuota_iva=producto.alicuota_iva,
             ))
         self._refrescar_tabla_items()
+        self.combo_producto.limpiar()
+        self.cantidad.setValue(1)
+        self.combo_producto.setFocus()
 
     def quitar_item(self):
         fila = self.tabla_items.currentRow()

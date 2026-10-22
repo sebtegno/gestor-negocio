@@ -1,64 +1,117 @@
-from PySide6.QtWidgets import QComboBox
-from PySide6.QtCore import Qt, QSortFilterProxyModel
+import unicodedata
+
+from PySide6.QtWidgets import QLineEdit, QCompleter
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QModelIndex
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 
 
-class ComboBuscable(QComboBox):
+def _norm(t: str) -> str:
+    t = unicodedata.normalize("NFKD", str(t or "")).encode("ascii", "ignore").decode()
+    return t.lower()
+
+
+class _FiltroPalabras(QSortFilterProxyModel):
+    """Muestra solo los ítems que contienen TODAS las palabras escritas (en cualquier orden)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._palabras: list[str] = []
+
+    def set_texto(self, texto: str):
+        self._palabras = _norm(texto).split()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, fila: int, padre: QModelIndex) -> bool:
+        if not self._palabras:
+            return True
+        item = self.sourceModel().index(fila, 0, padre).data(Qt.DisplayRole) or ""
+        texto = _norm(item)
+        return all(p in texto for p in self._palabras)
+
+
+class ComboBuscable(QLineEdit):
     """
-    QComboBox editable con autocompletado por coincidencia parcial
-    (no solo por prefijo) e insensible a mayúsculas/minúsculas.
-    Cada ítem guarda su id como userData, accesible con valor_seleccionado().
+    Campo de texto con lista de sugerencias: al escribir muestra SOLO las
+    opciones que contienen lo escrito (no autocompleta ni cambia el texto
+    por su cuenta). Se elige con el mouse o con las flechas + Enter.
+    Cada ítem guarda su id, accesible con valor_seleccionado().
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setEditable(True)
-        self.setInsertPolicy(QComboBox.NoInsert)
+        self._fuente = QStandardItemModel(self)
+        self._proxy = _FiltroPalabras(self)
+        self._proxy.setSourceModel(self._fuente)
+        self._id_elegido = None
+        self._texto_elegido = ""
 
-        self._modelo_fuente = QStandardItemModel(self)
-        self._proxy = QSortFilterProxyModel(self)
-        self._proxy.setSourceModel(self._modelo_fuente)
-        self._proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.setModel(self._proxy)
+        comp = QCompleter(self._proxy, self)
+        comp.setCompletionMode(QCompleter.UnfilteredPopupCompletion)  # el filtro lo hace el proxy
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setMaxVisibleItems(8)
+        comp.activated[QModelIndex].connect(self._al_elegir)
+        self.setCompleter(comp)
+        self.setClearButtonEnabled(True)
+        self.setPlaceholderText("Escribí para buscar...")
+        self.textEdited.connect(self._al_escribir)
 
-        completer = self.completer()
-        completer.setCompletionMode(completer.CompletionMode.PopupCompletion)
-        completer.setFilterMode(Qt.MatchContains)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-
-        self.lineEdit().textEdited.connect(self._filtrar)
-
+    # --- API ---------------------------------------------------------------
     def cargar_items(self, items: list[tuple[object, str]]):
         """items: lista de (id, texto_a_mostrar)"""
-        self.blockSignals(True)
-        self._modelo_fuente.clear()
+        self._fuente.clear()
         for item_id, texto in items:
-            item = QStandardItem(texto)
-            item.setData(item_id, Qt.UserRole)
-            self._modelo_fuente.appendRow(item)
-        self.setCurrentIndex(-1)
-        self.lineEdit().clear()
-        self.blockSignals(False)
+            it = QStandardItem(texto)
+            it.setData(item_id, Qt.UserRole)
+            self._fuente.appendRow(it)
+        self._id_elegido, self._texto_elegido = None, ""
+        self._proxy.set_texto("")
+        self.clear()
 
-    def _filtrar(self, texto: str):
-        self._proxy.setFilterFixedString(texto)
+    def lineEdit(self):  # compatibilidad con el QComboBox anterior
+        return self
+
+    def setCurrentIndex(self, indice: int):
+        if 0 <= indice < self._fuente.rowCount():
+            it = self._fuente.item(indice)
+            self._id_elegido, self._texto_elegido = it.data(Qt.UserRole), it.text()
+            self.setText(it.text())
+        else:
+            self._id_elegido, self._texto_elegido = None, ""
+            self.clear()
+
+    def limpiar(self):
+        self.setCurrentIndex(-1)
 
     def valor_seleccionado(self):
         """
-        Devuelve el id asociado al texto actual, buscando primero una
-        coincidencia exacta y si no la hay, la primera coincidencia parcial.
-        None si no matchea nada.
+        Id del ítem elegido. Si no se eligió de la lista pero el texto coincide
+        exacto con uno, o deja una única opción posible, devuelve ese. Si hay
+        varias opciones posibles sin elegir, None.
         """
-        texto = self.currentText().strip().lower()
+        texto = self.text().strip()
         if not texto:
             return None
+        if self._id_elegido is not None and texto == self._texto_elegido:
+            return self._id_elegido
+        exacto = [self._fuente.item(r) for r in range(self._fuente.rowCount())
+                  if _norm(self._fuente.item(r).text()).strip() == _norm(texto).strip()]
+        if len(exacto) == 1:
+            return exacto[0].data(Qt.UserRole)
+        palabras = _norm(texto).split()
+        posibles = [self._fuente.item(r) for r in range(self._fuente.rowCount())
+                    if all(p in _norm(self._fuente.item(r).text()) for p in palabras)]
+        return posibles[0].data(Qt.UserRole) if len(posibles) == 1 else None
 
-        coincidencia_parcial = None
-        for row in range(self._modelo_fuente.rowCount()):
-            item = self._modelo_fuente.item(row)
-            item_texto = item.text().strip().lower()
-            if item_texto == texto:
-                return item.data(Qt.UserRole)
-            if texto in item_texto and coincidencia_parcial is None:
-                coincidencia_parcial = item.data(Qt.UserRole)
-        return coincidencia_parcial
+    # --- interno -----------------------------------------------------------
+    def _al_escribir(self, texto: str):
+        self._id_elegido, self._texto_elegido = None, ""
+        self._proxy.set_texto(texto)
+        if texto.strip() and self._proxy.rowCount() > 0:
+            self.completer().complete()
+        else:
+            self.completer().popup().hide()
+
+    def _al_elegir(self, indice: QModelIndex):
+        self._id_elegido = indice.data(Qt.UserRole)
+        self._texto_elegido = indice.data(Qt.DisplayRole)
+        self.setText(self._texto_elegido)
