@@ -1,0 +1,7 @@
+PySide6>=6.6
+SQLAlchemy>=2.0
+reportlab>=4.0  # generación de PDF de remitos y cotizaciones
+requests>=2.31  # cotización del dólar (BNA)
+openpyxl>=3.1  # importar productos desde Excel
+beautifulsoup4>=4.12  # parseo de la página del BNA
+# pyafipws>=2023.10  # integración con ARCA (WSFEv1): instalar recién cuando se conecte ese módulo
