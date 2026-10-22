@@ -1,2 +1,2 @@
 """Versión de la app. Subila cada vez que publiques una actualización."""
-VERSION = "1.0.4"
+VERSION = "1.0.5"

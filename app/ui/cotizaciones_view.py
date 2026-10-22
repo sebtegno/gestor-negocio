@@ -36,6 +36,7 @@ class DialogoNuevaCotizacion(QDialog):
         self._clientes = repo.listar_clientes()
         self.combo_cliente.cargar_items([(c.id, c.razon_social) for c in self._clientes])
         form.addRow("Cliente (escribí para buscar):", self.combo_cliente)
+        self.combo_cliente.seleccionado.connect(self._cliente_elegido)
         layout.addLayout(form)
 
         agregar_item = QHBoxLayout()
@@ -86,6 +87,25 @@ class DialogoNuevaCotizacion(QDialog):
 
         if cotizacion_existente:
             self._precargar(cotizacion_existente)
+
+    def _cliente_elegido(self):
+        """Responsable Inscripto: la cotización suma IVA automáticamente."""
+        cid = self.combo_cliente.valor_seleccionado()
+        cliente = next((c for c in self._clientes if c.id == cid), None)
+        if cliente and (cliente.condicion_iva or "").strip().lower() == "responsable inscripto":
+            self.chk_iva.setChecked(True)
+
+    def _tipo_cambio(self):
+        """Dólar venta para mostrar equivalentes en USD: el usado en los ítems o el del día."""
+        for it in reversed(self._items):
+            if it.get("tipo_cambio_usado"):
+                return it["tipo_cambio_usado"]
+        if getattr(self, "_tc_cache", None) is None:
+            try:
+                self._tc_cache = cotizador_dolar.valor_dolar_del_dia().venta
+            except Exception:
+                self._tc_cache = 0
+        return self._tc_cache or None
 
     def _precargar(self, cot):
         idx = next((i for i, c in enumerate(self._clientes) if c.id == cot.cliente_id), None)
@@ -177,9 +197,24 @@ class DialogoNuevaCotizacion(QDialog):
                 origen = f"US$ {it['precio_usd_original']:,.2f} x ${it['tipo_cambio_usado']:,.2f}"
             self.tabla_items.setItem(row, 3, QTableWidgetItem(origen))
             self.tabla_items.setItem(row, 4, QTableWidgetItem(f"${subtotal:,.2f}"))
-        self.label_subtotal.setText(f"Subtotal (sin IVA): ${subtotal_neto:,.2f}")
-        self.label_iva.setText(f"IVA: ${monto_iva:,.2f}" if con_iva else "IVA: no incluido")
-        self.label_total.setText(f"Total: ${subtotal_neto + monto_iva:,.2f}")
+        tc = self._tipo_cambio()
+
+        # Subtotal en USD: los ítems en dólares usan su precio original; el resto se convierte.
+        subtotal_usd = 0.0
+        for it in self._items:
+            if it.get("precio_usd_original") is not None:
+                subtotal_usd += it["cantidad"] * it["precio_usd_original"]
+            elif tc:
+                subtotal_usd += it["cantidad"] * it["precio_unitario"] / tc
+        hay_usd = bool(self._items) and (tc or all(it.get("precio_usd_original") is not None for it in self._items))
+        factor = (subtotal_usd / subtotal_neto) if subtotal_neto else 0.0
+
+        def tx(ars, usd_val):
+            return f"${ars:,.2f}" + (f"   |   US$ {usd_val:,.2f}" if hay_usd else "")
+
+        self.label_subtotal.setText("Subtotal (sin IVA): " + tx(subtotal_neto, subtotal_usd))
+        self.label_iva.setText(("IVA: " + tx(monto_iva, monto_iva * factor)) if con_iva else "IVA: no incluido")
+        self.label_total.setText("Total: " + tx(subtotal_neto + monto_iva, (subtotal_neto + monto_iva) * factor))
 
     def datos(self) -> tuple[int, list[dict], bool]:
         cliente_id = self.combo_cliente.valor_seleccionado()

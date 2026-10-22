@@ -1,7 +1,7 @@
 import unicodedata
 
 from PySide6.QtWidgets import QLineEdit, QCompleter
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QModelIndex
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QModelIndex, Signal
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 
 
@@ -37,6 +37,8 @@ class ComboBuscable(QLineEdit):
     Cada ítem guarda su id, accesible con valor_seleccionado().
     """
 
+    seleccionado = Signal()  # el usuario eligió (o terminó de escribir) un ítem válido
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._fuente = QStandardItemModel(self)
@@ -54,6 +56,7 @@ class ComboBuscable(QLineEdit):
         self.setClearButtonEnabled(True)
         self.setPlaceholderText("Escribí para buscar...")
         self.textEdited.connect(self._al_escribir)
+        self.editingFinished.connect(self._al_terminar)
 
     # --- API ---------------------------------------------------------------
     def cargar_items(self, items: list[tuple[object, str]]):
@@ -115,3 +118,8 @@ class ComboBuscable(QLineEdit):
         self._id_elegido = indice.data(Qt.UserRole)
         self._texto_elegido = indice.data(Qt.DisplayRole)
         self.setText(self._texto_elegido)
+        self.seleccionado.emit()
+
+    def _al_terminar(self):
+        if self.valor_seleccionado() is not None:
+            self.seleccionado.emit()
