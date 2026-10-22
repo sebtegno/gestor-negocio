@@ -5,6 +5,7 @@ from ..version import VERSION
 from .inicio_view import InicioView
 from .stock_view import StockView
 from .clientes_view import ClientesView
+from .proveedores_view import ProveedoresView
 from .cotizaciones_view import CotizacionesView
 
 
@@ -27,11 +28,13 @@ class MainWindow(QMainWindow):
         self.inicio_view = InicioView()
         self.stock_view = StockView()
         self.clientes_view = ClientesView()
+        self.proveedores_view = ProveedoresView()
         self.cotizaciones_view = CotizacionesView()
 
         tabs.addTab(self.inicio_view, "INICIO")
         tabs.addTab(self.stock_view, "STOCK")
         tabs.addTab(self.clientes_view, "CLIENTES")
+        tabs.addTab(self.proveedores_view, "PROVEEDORES")
         tabs.addTab(self.cotizaciones_view, "COTIZACIONES / FACTURAS")
 
         # Refrescar la pestaña al abrirla, por si cambió algo desde otra.

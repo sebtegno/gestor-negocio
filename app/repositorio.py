@@ -14,6 +14,8 @@ from .database import (
     get_session, Producto, MovimientoStock, Cliente,
     Cotizacion, ItemCotizacion, Factura,
     MovimientoCuentaCorriente, Remito, ItemRemito, ValorDolar,
+    Proveedor, FacturaProveedor, ItemFacturaProveedor,
+    MovimientoCuentaProveedor, AliasProductoProveedor,
 )
 
 
@@ -690,3 +692,237 @@ def guardar_valor_dolar(compra: float, venta: float, fuente: str = "BNA",
         s.commit()
         s.refresh(nuevo)
         return nuevo
+
+
+# ---------------------------------------------------------------------------
+# Proveedores (independientes de los clientes: no aparecen en cotizaciones)
+# ---------------------------------------------------------------------------
+
+def listar_proveedores() -> list[Proveedor]:
+    with get_session() as s:
+        q = select(Proveedor).where(Proveedor.activo.is_(True)).order_by(Proveedor.razon_social)
+        return list(s.execute(q).scalars().all())
+
+
+def obtener_proveedor(proveedor_id: int) -> Optional[Proveedor]:
+    with get_session() as s:
+        return s.get(Proveedor, proveedor_id)
+
+
+def crear_proveedor(razon_social: str, cuit: str = "", condicion_iva: str = "Responsable Inscripto",
+                    domicilio: str = "", email: str = "", telefono: str = "",
+                    notas: str = "") -> Proveedor:
+    with get_session() as s:
+        p = Proveedor(razon_social=razon_social, cuit=cuit, condicion_iva=condicion_iva,
+                      domicilio=domicilio, email=email, telefono=telefono, notas=notas)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        return p
+
+
+def actualizar_proveedor(proveedor_id: int, **campos) -> None:
+    with get_session() as s:
+        p = s.get(Proveedor, proveedor_id)
+        if not p:
+            raise ValueError("Proveedor no encontrado")
+        for k, v in campos.items():
+            setattr(p, k, v)
+        s.commit()
+
+
+def eliminar_proveedor(proveedor_id: int) -> None:
+    """Sin facturas ni movimientos se borra; si tiene historial solo se oculta."""
+    with get_session() as s:
+        p = s.get(Proveedor, proveedor_id)
+        if not p:
+            raise ValueError("Proveedor no encontrado")
+        tiene = s.execute(select(FacturaProveedor.id).where(FacturaProveedor.proveedor_id == proveedor_id)).first() \
+            or s.execute(select(MovimientoCuentaProveedor.id).where(
+                MovimientoCuentaProveedor.proveedor_id == proveedor_id)).first()
+        if tiene:
+            p.activo = False
+        else:
+            s.delete(p)
+        s.commit()
+
+
+def buscar_proveedor_por_cuit(cuits: list[str]) -> Optional[Proveedor]:
+    limpios = {"".join(ch for ch in c if ch.isdigit()) for c in cuits}
+    for p in listar_proveedores():
+        if p.cuit and "".join(ch for ch in p.cuit if ch.isdigit()) in limpios:
+            return p
+    return None
+
+
+def listar_movimientos_proveedor(proveedor_id: int) -> list[MovimientoCuentaProveedor]:
+    with get_session() as s:
+        q = (select(MovimientoCuentaProveedor)
+             .where(MovimientoCuentaProveedor.proveedor_id == proveedor_id)
+             .order_by(MovimientoCuentaProveedor.fecha.desc(), MovimientoCuentaProveedor.id.desc()))
+        return list(s.execute(q).scalars().all())
+
+
+def saldo_proveedor(proveedor_id: int) -> float:
+    """Positivo = le debemos al proveedor. Negativo = tenemos saldo a favor."""
+    return sum(m.importe if m.tipo == "debe" else -m.importe
+               for m in listar_movimientos_proveedor(proveedor_id))
+
+
+def registrar_movimiento_proveedor(proveedor_id: int, tipo: str, importe: float,
+                                   concepto: str, medio_pago: str = "") -> MovimientoCuentaProveedor:
+    if tipo not in ("debe", "haber"):
+        raise ValueError("Tipo inválido")
+    with get_session() as s:
+        m = MovimientoCuentaProveedor(proveedor_id=proveedor_id, tipo=tipo, importe=importe,
+                                      concepto=concepto, medio_pago=medio_pago or None)
+        s.add(m)
+        s.commit()
+        s.refresh(m)
+        return m
+
+
+def actualizar_movimiento_proveedor(movimiento_id: int, **campos) -> None:
+    with get_session() as s:
+        m = s.get(MovimientoCuentaProveedor, movimiento_id)
+        if not m:
+            raise ValueError("Movimiento no encontrado")
+        for k, v in campos.items():
+            setattr(m, k, v)
+        s.commit()
+
+
+def eliminar_movimiento_proveedor(movimiento_id: int) -> None:
+    with get_session() as s:
+        m = s.get(MovimientoCuentaProveedor, movimiento_id)
+        if not m:
+            raise ValueError("Movimiento no encontrado")
+        if m.factura_id:
+            raise ValueError("Este movimiento pertenece a una factura cargada. "
+                             "Eliminá la factura desde la pestaña Facturas.")
+        s.delete(m)
+        s.commit()
+
+
+def alias_de_proveedor(proveedor_id: int) -> dict:
+    with get_session() as s:
+        filas = s.execute(select(AliasProductoProveedor)
+                          .where(AliasProductoProveedor.proveedor_id == proveedor_id)).scalars().all()
+        return {a.texto: a.producto_id for a in filas}
+
+
+def _codigos_existentes(s) -> set:
+    return set(s.execute(select(Producto.codigo)).scalars().all())
+
+
+def crear_factura_proveedor(proveedor_id: int, numero: str, fecha: dt.date, total: float,
+                            items: list[dict], observaciones: str = "",
+                            archivo: str = "") -> dict:
+    """
+    items: [{descripcion, cantidad, precio_unitario,
+             accion: "existente" | "nuevo" | "omitir", producto_id (si existente),
+             descripcion_norm (para recordar el alias)}]
+    Suma el stock de lo que corresponda, registra la deuda (debe) con el proveedor
+    y recuerda las asociaciones descripción -> producto. NO modifica el costo de
+    productos existentes; los productos nuevos nacen con el costo de la factura.
+    Devuelve un resumen {sumados, creados, omitidos, factura_id}.
+    """
+    resumen = {"sumados": 0, "creados": 0, "omitidos": 0, "factura_id": None}
+    with get_session() as s:
+        prov = s.get(Proveedor, proveedor_id)
+        if not prov:
+            raise ValueError("Proveedor no encontrado")
+        factura = FacturaProveedor(
+            proveedor_id=proveedor_id, numero=numero,
+            fecha=dt.datetime.combine(fecha, dt.time.min), total=total,
+            observaciones=observaciones, archivo=archivo or None, stock_aplicado=True)
+        s.add(factura)
+        s.flush()
+
+        codigos = _codigos_existentes(s)
+        proximo = 0
+        motivo = f"Factura {numero or factura.id} - {prov.razon_social}"
+        for it in items:
+            accion = it.get("accion", "omitir")
+            cant = float(it.get("cantidad") or 0)
+            producto = None
+            if accion == "existente" and it.get("producto_id"):
+                producto = s.get(Producto, it["producto_id"])
+            elif accion == "nuevo":
+                while True:
+                    proximo += 1
+                    codigo = f"SIN-CODIGO-{proximo:03d}"
+                    if codigo not in codigos:
+                        break
+                codigos.add(codigo)
+                producto = Producto(
+                    codigo=codigo, descripcion=it["descripcion"],
+                    precio_costo=float(it.get("precio_unitario") or 0), precio_venta=0.0,
+                    stock_actual=0.0)
+                s.add(producto)
+                s.flush()
+                resumen["creados"] += 1
+
+            sumado = 0.0
+            if producto is not None and cant > 0:
+                producto.stock_actual = (producto.stock_actual or 0) + cant
+                s.add(MovimientoStock(producto_id=producto.id, tipo="entrada",
+                                      cantidad=cant, motivo=motivo))
+                sumado = cant
+                resumen["sumados"] += 1
+                clave = it.get("descripcion_norm")
+                if clave:
+                    ya = s.execute(select(AliasProductoProveedor).where(
+                        AliasProductoProveedor.proveedor_id == proveedor_id,
+                        AliasProductoProveedor.texto == clave)).scalars().first()
+                    if ya:
+                        ya.producto_id = producto.id
+                    else:
+                        s.add(AliasProductoProveedor(proveedor_id=proveedor_id, texto=clave,
+                                                     producto_id=producto.id))
+            else:
+                resumen["omitidos"] += 1
+
+            s.add(ItemFacturaProveedor(
+                factura_id=factura.id, producto_id=producto.id if producto is not None else None,
+                descripcion=it.get("descripcion"), cantidad=cant,
+                precio_unitario=float(it.get("precio_unitario") or 0), stock_sumado=sumado))
+
+        s.add(MovimientoCuentaProveedor(
+            proveedor_id=proveedor_id, tipo="debe", importe=total,
+            concepto=f"Factura {numero or factura.id}", factura_id=factura.id,
+            fecha=dt.datetime.combine(fecha, dt.time.min)))
+        s.commit()
+        resumen["factura_id"] = factura.id
+    return resumen
+
+
+def listar_facturas_proveedor(proveedor_id: int) -> list[FacturaProveedor]:
+    with get_session() as s:
+        q = (select(FacturaProveedor).where(FacturaProveedor.proveedor_id == proveedor_id)
+             .options(joinedload(FacturaProveedor.items).joinedload(ItemFacturaProveedor.producto))
+             .order_by(FacturaProveedor.fecha.desc(), FacturaProveedor.id.desc()))
+        return list(s.execute(q).unique().scalars().all())
+
+
+def eliminar_factura_proveedor(factura_id: int, revertir_stock: bool = True) -> None:
+    """Borra la factura y su deuda; opcionalmente resta del stock lo que había sumado."""
+    with get_session() as s:
+        f = s.execute(select(FacturaProveedor).where(FacturaProveedor.id == factura_id)
+                      .options(joinedload(FacturaProveedor.items))).unique().scalars().first()
+        if not f:
+            raise ValueError("Factura no encontrada")
+        if revertir_stock:
+            for it in f.items:
+                if it.producto_id and (it.stock_sumado or 0) > 0:
+                    p = s.get(Producto, it.producto_id)
+                    if p:
+                        quitar = min(it.stock_sumado, p.stock_actual or 0)
+                        p.stock_actual = (p.stock_actual or 0) - quitar
+                        s.add(MovimientoStock(producto_id=p.id, tipo="salida", cantidad=quitar,
+                                              motivo=f"Se eliminó la factura {f.numero or f.id}"))
+        for m in s.execute(select(MovimientoCuentaProveedor)
+                           .where(MovimientoCuentaProveedor.factura_id == factura_id)).scalars().all():
+            s.delete(m)
+        s.delete(f)
+        s.commit()

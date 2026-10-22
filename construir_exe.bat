@@ -71,7 +71,7 @@ call venv_build\Scripts\activate.bat
 
 echo [3/5] Instalando dependencias...
 python -m pip install --upgrade pip
-pip install PySide6 SQLAlchemy reportlab requests beautifulsoup4 openpyxl pyinstaller
+pip install PySide6 SQLAlchemy reportlab requests beautifulsoup4 openpyxl pypdf pyinstaller
 if errorlevel 1 goto :error
 
 set ICONO=

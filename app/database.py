@@ -247,6 +247,77 @@ class ValorDolar(Base):
     obtenido_en = Column(DateTime, default=dt.datetime.now)
 
 
+class Proveedor(Base):
+    """Proveedores: aparte de los clientes, no aparecen al armar cotizaciones."""
+    __tablename__ = "proveedores"
+
+    id = Column(Integer, primary_key=True)
+    razon_social = Column(String(200), nullable=False)
+    cuit = Column(String(20))
+    condicion_iva = Column(String(50))
+    domicilio = Column(String(255))
+    email = Column(String(120))
+    telefono = Column(String(50))
+    notas = Column(Text)
+    activo = Column(Boolean, default=True)
+
+
+class FacturaProveedor(Base):
+    __tablename__ = "facturas_proveedor"
+
+    id = Column(Integer, primary_key=True)
+    proveedor_id = Column(Integer, ForeignKey("proveedores.id"), nullable=False)
+    numero = Column(String(50))
+    fecha = Column(DateTime, default=dt.datetime.now)
+    total = Column(Float, default=0.0)
+    observaciones = Column(Text)
+    archivo = Column(String(500))  # ruta del PDF/imagen original, si se cargó
+    stock_aplicado = Column(Boolean, default=False)
+
+    proveedor = relationship("Proveedor")
+    items = relationship("ItemFacturaProveedor", back_populates="factura",
+                          cascade="all, delete-orphan")
+
+
+class ItemFacturaProveedor(Base):
+    __tablename__ = "items_factura_proveedor"
+
+    id = Column(Integer, primary_key=True)
+    factura_id = Column(Integer, ForeignKey("facturas_proveedor.id"), nullable=False)
+    producto_id = Column(Integer, ForeignKey("productos.id"))  # None = no se sumó al stock
+    descripcion = Column(String(300))
+    cantidad = Column(Float, default=1.0)
+    precio_unitario = Column(Float, default=0.0)
+    stock_sumado = Column(Float, default=0.0)
+
+    factura = relationship("FacturaProveedor", back_populates="items")
+    producto = relationship("Producto")
+
+
+class MovimientoCuentaProveedor(Base):
+    """Cuenta corriente con el proveedor. Debe = lo que le debemos (facturas); Haber = lo que le pagamos."""
+    __tablename__ = "movimientos_cuenta_proveedor"
+
+    id = Column(Integer, primary_key=True)
+    proveedor_id = Column(Integer, ForeignKey("proveedores.id"), nullable=False)
+    fecha = Column(DateTime, default=dt.datetime.now)
+    tipo = Column(String(10))  # "debe" | "haber"
+    concepto = Column(String(255))
+    importe = Column(Float, default=0.0)
+    medio_pago = Column(String(50))
+    factura_id = Column(Integer, ForeignKey("facturas_proveedor.id"))
+
+
+class AliasProductoProveedor(Base):
+    """Recuerda qué producto del stock corresponde a cada descripción de un proveedor."""
+    __tablename__ = "alias_producto_proveedor"
+
+    id = Column(Integer, primary_key=True)
+    proveedor_id = Column(Integer, ForeignKey("proveedores.id"), nullable=False)
+    texto = Column(String(300), nullable=False)  # descripción normalizada
+    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
     _migrar_columnas_faltantes()
