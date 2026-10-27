@@ -817,14 +817,14 @@ def _codigos_existentes(s) -> set:
 
 def crear_factura_proveedor(proveedor_id: int, numero: str, fecha: dt.date, total: float,
                             items: list[dict], observaciones: str = "",
-                            archivo: str = "") -> dict:
+                            archivo: str = "", actualizar_costo: bool = False) -> dict:
     """
     items: [{descripcion, cantidad, precio_unitario,
              accion: "existente" | "nuevo" | "omitir", producto_id (si existente),
              descripcion_norm (para recordar el alias)}]
     Suma el stock de lo que corresponda, registra la deuda (debe) con el proveedor
-    y recuerda las asociaciones descripción -> producto. NO modifica el costo de
-    productos existentes; los productos nuevos nacen con el costo de la factura.
+    y recuerda las asociaciones descripción -> producto. Con actualizar_costo=True también pone el costo
+    de la factura a los productos existentes (nunca toca el precio de venta); los productos nuevos nacen con el costo de la factura.
     Devuelve un resumen {sumados, creados, omitidos, factura_id}.
     """
     resumen = {"sumados": 0, "creados": 0, "omitidos": 0, "factura_id": None}
@@ -848,6 +848,10 @@ def crear_factura_proveedor(proveedor_id: int, numero: str, fecha: dt.date, tota
             producto = None
             if accion == "existente" and it.get("producto_id"):
                 producto = s.get(Producto, it["producto_id"])
+                if (actualizar_costo and producto is not None and not producto.precio_en_dolares
+                        and float(it.get("precio_unitario") or 0) > 0):
+                    producto.precio_costo = float(it["precio_unitario"])
+                    resumen["costos_actualizados"] = resumen.get("costos_actualizados", 0) + 1
             elif accion == "nuevo":
                 while True:
                     proximo += 1
