@@ -817,14 +817,14 @@ def _codigos_existentes(s) -> set:
 
 def crear_factura_proveedor(proveedor_id: int, numero: str, fecha: dt.date, total: float,
                             items: list[dict], observaciones: str = "",
-                            archivo: str = "", actualizar_costo: bool = False) -> dict:
+                            archivo: str = "") -> dict:
     """
     items: [{descripcion, cantidad, precio_unitario,
              accion: "existente" | "nuevo" | "omitir", producto_id (si existente),
              descripcion_norm (para recordar el alias)}]
     Suma el stock de lo que corresponda, registra la deuda (debe) con el proveedor
-    y recuerda las asociaciones descripción -> producto. Con actualizar_costo=True también pone el costo
-    de la factura a los productos existentes (nunca toca el precio de venta); los productos nuevos nacen con el costo de la factura.
+    y recuerda las asociaciones descripción -> producto. NO modifica el costo de
+    productos existentes; los productos nuevos nacen con el costo de la factura.
     Devuelve un resumen {sumados, creados, omitidos, factura_id}.
     """
     resumen = {"sumados": 0, "creados": 0, "omitidos": 0, "factura_id": None}
@@ -848,10 +848,6 @@ def crear_factura_proveedor(proveedor_id: int, numero: str, fecha: dt.date, tota
             producto = None
             if accion == "existente" and it.get("producto_id"):
                 producto = s.get(Producto, it["producto_id"])
-                if (actualizar_costo and producto is not None and not producto.precio_en_dolares
-                        and float(it.get("precio_unitario") or 0) > 0):
-                    producto.precio_costo = float(it["precio_unitario"])
-                    resumen["costos_actualizados"] = resumen.get("costos_actualizados", 0) + 1
             elif accion == "nuevo":
                 while True:
                     proximo += 1
@@ -930,3 +926,67 @@ def eliminar_factura_proveedor(factura_id: int, revertir_stock: bool = True) -> 
             s.delete(m)
         s.delete(f)
         s.commit()
+
+
+# ---------------------------------------------------------------------------
+# Balance general
+# ---------------------------------------------------------------------------
+
+def balance_general(desde: Optional[dt.date] = None, hasta: Optional[dt.date] = None) -> dict:
+    """
+    Resumen entre lo que entra y lo que sale en un período (desde/hasta inclusive; None = sin límite).
+      entradas  = cobros a clientes (haber de la cuenta corriente de clientes)
+      salidas   = pagos a proveedores (haber de la cuenta corriente de proveedores)
+      facturado = lo cargado al debe de clientes; comprado = lo cargado al debe de proveedores
+      por_cobrar / por_pagar = saldos pendientes AL DÍA DE HOY (no dependen del período)
+      movimientos = lista de cobros y pagos del período, más nuevos primero
+    """
+    ini = dt.datetime.combine(desde, dt.time.min) if desde else None
+    fin = dt.datetime.combine(hasta, dt.time.max) if hasta else None
+
+    def en_periodo(f):
+        return f is not None and (ini is None or f >= ini) and (fin is None or f <= fin)
+
+    with get_session() as s:
+        clientes = {c.id: c.razon_social for c in s.execute(select(Cliente)).scalars()}
+        provs = {p.id: p.razon_social for p in s.execute(select(Proveedor)).scalars()}
+        mov_c = list(s.execute(select(MovimientoCuentaCorriente)).scalars())
+        mov_p = list(s.execute(select(MovimientoCuentaProveedor)).scalars())
+
+    res = dict(entradas=0.0, salidas=0.0, facturado=0.0, comprado=0.0,
+               por_cobrar=0.0, por_pagar=0.0, movimientos=[], por_medio_entradas={}, por_medio_salidas={})
+
+    saldo_c: dict[int, float] = {}
+    for m in mov_c:
+        signo = 1 if m.tipo == "debe" else -1
+        saldo_c[m.cliente_id] = saldo_c.get(m.cliente_id, 0.0) + signo * (m.importe or 0)
+        if not en_periodo(m.fecha):
+            continue
+        if m.tipo == "haber":
+            res["entradas"] += m.importe or 0
+            medio = m.medio_pago or "Sin especificar"
+            res["por_medio_entradas"][medio] = res["por_medio_entradas"].get(medio, 0.0) + (m.importe or 0)
+            res["movimientos"].append(dict(fecha=m.fecha, tipo="Entrada", contraparte=clientes.get(m.cliente_id, "?"),
+                                           concepto=m.concepto or "", medio=m.medio_pago or "", importe=m.importe or 0))
+        else:
+            res["facturado"] += m.importe or 0
+
+    saldo_p: dict[int, float] = {}
+    for m in mov_p:
+        signo = 1 if m.tipo == "debe" else -1
+        saldo_p[m.proveedor_id] = saldo_p.get(m.proveedor_id, 0.0) + signo * (m.importe or 0)
+        if not en_periodo(m.fecha):
+            continue
+        if m.tipo == "haber":
+            res["salidas"] += m.importe or 0
+            medio = m.medio_pago or "Sin especificar"
+            res["por_medio_salidas"][medio] = res["por_medio_salidas"].get(medio, 0.0) + (m.importe or 0)
+            res["movimientos"].append(dict(fecha=m.fecha, tipo="Salida", contraparte=provs.get(m.proveedor_id, "?"),
+                                           concepto=m.concepto or "", medio=m.medio_pago or "", importe=m.importe or 0))
+        else:
+            res["comprado"] += m.importe or 0
+
+    res["por_cobrar"] = sum(v for v in saldo_c.values() if v > 0.005)
+    res["por_pagar"] = sum(v for v in saldo_p.values() if v > 0.005)
+    res["movimientos"].sort(key=lambda x: x["fecha"] or dt.datetime.min, reverse=True)
+    return res
