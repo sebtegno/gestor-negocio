@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel
+from PySide6.QtWidgets import QMainWindow, QStatusBar, QTabWidget, QWidget, QVBoxLayout, QLabel
 
 from .. import marca
 from ..version import VERSION
@@ -43,6 +43,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(tabs)
 
         self.setCentralWidget(contenedor)
+
+        # Marca de autoría, abajo a la derecha.
+        marca_autor = QLabel("Desarrollado por Sebastián Leys · © 2026")
+        marca_autor.setStyleSheet("color: #8a8a8a; font-size: 11px; padding: 0 10px;")
+        barra = QStatusBar()
+        barra.setSizeGripEnabled(False)
+        barra.addPermanentWidget(marca_autor)
+        self.setStatusBar(barra)
 
     def _crear_cabecera(self) -> QWidget:
         cabecera = QWidget()
