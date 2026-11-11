@@ -64,6 +64,7 @@ class Actualizador:
 
     # ------------------------------------------------------------------
     def _ofrecer(self, version: str, url: str):
+        self._ofrecida = True
         if ejecutando_como_exe():
             if not url:
                 return
