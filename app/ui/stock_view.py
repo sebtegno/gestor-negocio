@@ -1,13 +1,14 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QLineEdit, QFormLayout, QDoubleSpinBox, QMessageBox,
-    QDialog, QDialogButtonBox, QLabel, QCheckBox, QFileDialog
+    QDialog, QDialogButtonBox, QLabel, QCheckBox, QFileDialog, QSpinBox, QHeaderView
 )
 from PySide6.QtCore import Qt
 
 from .. import repositorio as repo
 from .. import importar_productos as imp
 from .tema import marcar_boton
+from .widgets import ComboBuscable
 
 
 class DialogoProducto(QDialog):
@@ -122,6 +123,109 @@ class DialogoImportar(QDialog):
         return self.chk_actualizar.isChecked()
 
 
+class DialogoCargaRapida(QDialog):
+    """Suma stock de varios productos de una sola vez: se escribe el nombre, se elige de la lista y se pone la cantidad."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Carga rápida de stock")
+        self.resize(760, 520)
+        self._items = [(p.id, f"{p.codigo} - {p.descripcion}") for p in repo.listar_productos()]
+        self._nombres = {pid: txt for pid, txt in self._items}
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "Escribí el nombre o código del producto, elegilo de la lista y poné la cantidad. "
+            "<b>Enter</b> en la cantidad agrega una fila nueva."))
+
+        self.tabla = QTableWidget(0, 2)
+        self.tabla.setHorizontalHeaderLabels(["Producto", "Cantidad a sumar"])
+        self.tabla.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tabla.setColumnWidth(1, 150)
+        self.tabla.verticalHeader().setDefaultSectionSize(34)
+        layout.addWidget(self.tabla, 1)
+
+        barra = QHBoxLayout()
+        b_mas = QPushButton("+ Fila")
+        b_mas.clicked.connect(lambda: self._agregar_fila(enfocar=True))
+        b_menos = QPushButton("Quitar fila")
+        b_menos.clicked.connect(self._quitar_fila)
+        barra.addWidget(b_mas)
+        barra.addWidget(b_menos)
+        barra.addStretch()
+        layout.addLayout(barra)
+
+        botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        botones.button(QDialogButtonBox.Ok).setText("Sumar al stock")
+        botones.accepted.connect(self._guardar)
+        botones.rejected.connect(self.reject)
+        layout.addWidget(botones)
+
+        self._agregar_fila(enfocar=True)
+
+    def _agregar_fila(self, enfocar: bool = False):
+        fila = self.tabla.rowCount()
+        self.tabla.insertRow(fila)
+        combo = ComboBuscable()
+        combo.cargar_items(self._items)
+        combo.setPlaceholderText("Escribí para buscar producto...")
+        cant = QSpinBox()
+        cant.setRange(0, 1_000_000)
+        cant.setValue(1)
+        cant.setButtonSymbols(QSpinBox.NoButtons)
+        # Elegir producto -> salta a la cantidad; Enter en cantidad -> fila nueva
+        combo.seleccionado.connect(lambda c=cant: (c.setFocus(), c.selectAll()))
+        cant.lineEdit().returnPressed.connect(lambda f=fila: self._enter_en_cantidad(f))
+        self.tabla.setCellWidget(fila, 0, combo)
+        self.tabla.setCellWidget(fila, 1, cant)
+        if enfocar:
+            self.tabla.setCurrentCell(fila, 0)
+            combo.setFocus()
+
+    def _enter_en_cantidad(self, fila: int):
+        if fila == self.tabla.rowCount() - 1:
+            self._agregar_fila(enfocar=True)
+        else:
+            self.tabla.cellWidget(fila + 1, 0).setFocus()
+
+    def _quitar_fila(self):
+        fila = self.tabla.currentRow()
+        if fila >= 0 and self.tabla.rowCount() > 1:
+            self.tabla.removeRow(fila)
+
+    def _guardar(self):
+        totales: dict[int, int] = {}
+        problemas = []
+        for f in range(self.tabla.rowCount()):
+            combo, cant = self.tabla.cellWidget(f, 0), self.tabla.cellWidget(f, 1)
+            texto = combo.text().strip()
+            if not texto:
+                continue
+            pid = combo.valor_seleccionado()
+            if pid is None:
+                problemas.append(f"Fila {f + 1}: «{texto}» no coincide con un solo producto (elegilo de la lista).")
+            elif cant.value() <= 0:
+                problemas.append(f"Fila {f + 1}: la cantidad debe ser mayor a cero.")
+            else:
+                totales[pid] = totales.get(pid, 0) + cant.value()
+        if problemas:
+            QMessageBox.warning(self, "Revisá las filas", "\n".join(problemas[:10]))
+            return
+        if not totales:
+            QMessageBox.information(self, "Nada para cargar", "Agregá al menos un producto con su cantidad.")
+            return
+        try:
+            for pid, cantidad in totales.items():
+                repo.registrar_movimiento_stock(pid, "entrada", cantidad, "Carga rápida de stock")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
+        resumen = "\n".join(f"+{c}  {self._nombres.get(pid, pid)}" for pid, c in list(totales.items())[:15])
+        QMessageBox.information(self, "Stock actualizado",
+                                f"Se sumó stock a {len(totales)} producto(s):\n\n{resumen}")
+        self.accept()
+
+
 class StockView(QWidget):
     def __init__(self):
         super().__init__()
@@ -145,6 +249,10 @@ class StockView(QWidget):
         btn_nuevo.clicked.connect(self.nuevo_producto)
         barra.addWidget(btn_editar)
         barra.addWidget(btn_eliminar)
+        btn_rapida = QPushButton("Carga rápida de stock")
+        marcar_boton(btn_rapida, "primario")
+        btn_rapida.clicked.connect(self.carga_rapida)
+        barra.addWidget(btn_rapida)
         btn_importar = QPushButton("Importar desde Excel")
         btn_importar.clicked.connect(self.importar_excel)
         barra.addWidget(btn_importar)
@@ -167,6 +275,10 @@ class StockView(QWidget):
 
         self._productos_mostrados = []
         self.refrescar()
+
+    def carga_rapida(self):
+        if DialogoCargaRapida(self).exec() == QDialog.Accepted:
+            self.refrescar()
 
     def nuevo_producto(self):
         dialogo = DialogoProducto(self)
